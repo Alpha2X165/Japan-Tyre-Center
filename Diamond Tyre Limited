@@ -1,0 +1,659 @@
+
+import os
+import sqlite3
+import hashlib
+import hmac
+import secrets
+
+from kivy.app import App
+from kivy.metrics import dp, sp
+from kivy.core.window import Window
+from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.gridlayout import GridLayout
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.label import Label
+from kivy.uix.button import Button
+from kivy.uix.textinput import TextInput
+from kivy.uix.popup import Popup
+from kivy.graphics import Color, RoundedRectangle
+
+NAVY = (0.06, 0.14, 0.24, 1)
+BLUE = (0.02, 0.48, 0.76, 1)
+BG = (0.91, 0.95, 0.97, 1)
+WHITE = (1, 1, 1, 1)
+GREEN = (0.08, 0.52, 0.34, 1)
+RED = (0.75, 0.16, 0.16, 1)
+
+Window.clearcolor = BG
+
+
+def make_password(password, salt):
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode(),
+        salt, 200000
+    )
+
+
+class TyreApp(App):
+
+    def build(self):
+        self.title = "Japan Tyre Center"
+        self.db_path = os.path.join(
+            self.user_data_dir, "tyres.db"
+        )
+        self.setup_database()
+
+        self.sm = ScreenManager()
+
+        for name, screen in [
+            ("login", LoginScreen()),
+            ("home", HomeScreen()),
+            ("add", AddScreen()),
+            ("search", SearchScreen()),
+            ("all", AllScreen()),
+            ("settings", SettingsScreen())
+        ]:
+            screen.name = name
+            self.sm.add_widget(screen)
+
+        return self.sm
+
+    def setup_database(self):
+        db = sqlite3.connect(self.db_path)
+        c = db.cursor()
+
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS tyres (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            size TEXT NOT NULL,
+            brand TEXT NOT NULL,
+            price REAL NOT NULL
+        )
+        """)
+
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """)
+
+        if not c.execute(
+            "SELECT value FROM settings WHERE key='salt'"
+        ).fetchone():
+
+            salt = secrets.token_bytes(16)
+            hashed = make_password("Alpha X2", salt)
+
+            c.execute(
+                "INSERT INTO settings VALUES (?,?)",
+                ("salt", salt.hex())
+            )
+            c.execute(
+                "INSERT INTO settings VALUES (?,?)",
+                ("password", hashed.hex())
+            )
+
+        db.commit()
+        db.close()
+
+    def query(self, sql, values=()):
+        db = sqlite3.connect(self.db_path)
+        c = db.cursor()
+        c.execute(sql, values)
+        result = c.fetchall()
+        db.commit()
+        db.close()
+        return result
+
+    def message(self, title, text):
+        Popup(
+            title=title,
+            content=Label(
+                text=text,
+                color=NAVY,
+                font_size=sp(16)
+            ),
+            size_hint=(0.85, 0.30)
+        ).open()
+
+    def check_password(self, password):
+        salt = bytes.fromhex(
+            self.query(
+                "SELECT value FROM settings WHERE key='salt'"
+            )[0][0]
+        )
+        saved = self.query(
+            "SELECT value FROM settings WHERE key='password'"
+        )[0][0]
+
+        actual = make_password(password, salt).hex()
+        return hmac.compare_digest(actual, saved)
+
+    def change_password(self, old, new):
+        if not self.check_password(old):
+            return False
+
+        salt = secrets.token_bytes(16)
+        hashed = make_password(new, salt).hex()
+
+        self.query(
+            "UPDATE settings SET value=? WHERE key='salt'",
+            (salt.hex(),)
+        )
+        self.query(
+            "UPDATE settings SET value=? WHERE key='password'",
+            (hashed,)
+        )
+        return True
+
+
+def heading(text, size=22, color=NAVY):
+    return Label(
+        text=text,
+        font_size=sp(size),
+        bold=True,
+        color=color,
+        size_hint_y=None,
+        height=dp(55)
+    )
+
+
+def make_button(text, callback, color=WHITE, text_color=NAVY):
+    btn = Button(
+        text=text,
+        font_size=sp(17),
+        bold=True,
+        color=text_color,
+        background_normal="",
+        background_down="",
+        background_color=color,
+        size_hint_y=None,
+        height=dp(58)
+    )
+    btn.bind(on_release=callback)
+    return btn
+
+
+def make_input(hint, password=False):
+    return TextInput(
+        hint_text=hint,
+        password=password,
+        multiline=False,
+        font_size=sp(17),
+        size_hint_y=None,
+        height=dp(52),
+        padding=[dp(12), dp(13)],
+        background_color=WHITE,
+        foreground_color=NAVY,
+        hint_text_color=(0.4, 0.45, 0.5, 1)
+    )
+
+
+class LoginScreen(Screen):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        layout = BoxLayout(
+            orientation="vertical",
+            padding=dp(25),
+            spacing=dp(18)
+        )
+
+        layout.add_widget(Label(
+            text="JAPAN TYRE CENTER",
+            font_size=sp(27),
+            bold=True,
+            color=NAVY
+        ))
+
+        layout.add_widget(Label(
+            text="TYRE MANAGEMENT SYSTEM\nAwais Creator",
+            font_size=sp(18),
+            bold=True,
+            color=BLUE
+        ))
+
+        layout.add_widget(heading("SECURE LOGIN"))
+
+        self.password = make_input(
+            "Enter Password", True
+        )
+        layout.add_widget(self.password)
+
+        layout.add_widget(make_button(
+            "LOGIN",
+            self.login,
+            BLUE,
+            WHITE
+        ))
+
+        layout.add_widget(Label(
+            text="OFFLINE APPLICATION",
+            color=GREEN,
+            font_size=sp(13)
+        ))
+
+        self.add_widget(layout)
+
+    def login(self, instance):
+        app = App.get_running_app()
+
+        if app.check_password(self.password.text):
+            self.password.text = ""
+            app.sm.current = "home"
+        else:
+            app.message(
+                "Login Failed", "Incorrect password!"
+            )
+
+
+class HomeScreen(Screen):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        layout = BoxLayout(
+            orientation="vertical",
+            padding=dp(18),
+            spacing=dp(13)
+        )
+
+        layout.add_widget(heading(
+            "JAPAN TYRE CENTER", 25
+        ))
+
+        layout.add_widget(Label(
+            text="TYRE MANAGEMENT SYSTEM\nAwais Creator",
+            color=BLUE,
+            bold=True,
+            font_size=sp(18),
+            size_hint_y=None,
+            height=dp(75)
+        ))
+
+        layout.add_widget(Label(
+            text="● OFFLINE SYSTEM",
+            color=GREEN,
+            size_hint_y=None,
+            height=dp(30)
+        ))
+
+        buttons = [
+            ("ADD TYRE", "add"),
+            ("SEARCH SIZE", "search"),
+            ("ALL PRICES", "all"),
+            ("SETTINGS", "settings")
+        ]
+
+        grid = GridLayout(
+            cols=2,
+            spacing=dp(12)
+        )
+
+        for title, screen in buttons:
+            grid.add_widget(make_button(
+                title,
+                lambda x, s=screen:
+                setattr(App.get_running_app().sm, "current", s)
+            ))
+
+        layout.add_widget(grid)
+
+        layout.add_widget(Label(
+            text="JAPAN TYRE CENTER | AWAIS CREATOR",
+            color=NAVY,
+            font_size=sp(11),
+            size_hint_y=None,
+            height=dp(35)
+        ))
+
+        self.add_widget(layout)
+
+
+class AddScreen(Screen):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        layout = BoxLayout(
+            orientation="vertical",
+            padding=dp(20),
+            spacing=dp(12)
+        )
+
+        layout.add_widget(heading("ADD / EDIT TYRE"))
+
+        self.size = make_input("Tyre Size e.g. 145/80 R13")
+        self.brand = make_input("Brand e.g. Panther")
+        self.price = make_input("Price in Rupees")
+
+        layout.add_widget(self.size)
+        layout.add_widget(self.brand)
+        layout.add_widget(self.price)
+
+        layout.add_widget(make_button(
+            "SAVE TYRE", self.save, GREEN, WHITE
+        ))
+
+        layout.add_widget(make_button(
+            "BACK TO HOME",
+            lambda x: setattr(
+                App.get_running_app().sm, "current", "home"
+            )
+        ))
+
+        self.add_widget(layout)
+        self.edit_id = None
+
+    def prepare(self, record=None):
+        self.size.text = ""
+        self.brand.text = ""
+        self.price.text = ""
+        self.edit_id = None
+
+        if record:
+            self.edit_id = record[0]
+            self.size.text = record[1]
+            self.brand.text = record[2]
+            self.price.text = str(record[3])
+
+    def save(self, instance):
+        app = App.get_running_app()
+
+        size = self.size.text.strip().upper()
+        brand = self.brand.text.strip()
+        price = self.price.text.strip()
+
+        if not size or not brand or not price:
+            app.message("Missing Data", "Fill all fields.")
+            return
+
+        try:
+            price = float(price)
+            if price <= 0:
+                raise ValueError
+        except ValueError:
+            app.message("Invalid Price", "Enter a valid price.")
+            return
+
+        if self.edit_id:
+            app.query("""
+                UPDATE tyres SET size=?, brand=?, price=?
+                WHERE id=?
+            """, (size, brand, price, self.edit_id))
+        else:
+            app.query("""
+                INSERT INTO tyres (size, brand, price)
+                VALUES (?, ?, ?)
+            """, (size, brand, price))
+
+        self.prepare()
+        app.message("Success", "Tyre saved successfully!")
+
+
+class SearchScreen(Screen):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        layout = BoxLayout(
+            orientation="vertical",
+            padding=dp(18),
+            spacing=dp(12)
+        )
+
+        layout.add_widget(heading("SEARCH TYRE SIZE"))
+
+        self.search = make_input("Enter tyre size")
+        layout.add_widget(self.search)
+
+        layout.add_widget(make_button(
+            "SEARCH NOW", self.search_tyre, BLUE, WHITE
+        ))
+
+        self.results = BoxLayout(
+            orientation="vertical",
+            spacing=dp(8)
+        )
+
+        scroll = ScrollView()
+        scroll.add_widget(self.results)
+        layout.add_widget(scroll)
+
+        layout.add_widget(make_button(
+            "BACK HOME",
+            lambda x: setattr(
+                App.get_running_app().sm, "current", "home"
+            )
+        ))
+
+        self.add_widget(layout)
+
+    def search_tyre(self, instance):
+        app = App.get_running_app()
+        self.results.clear_widgets()
+
+        term = self.search.text.strip().upper()
+
+        if not term:
+            app.message("Search", "Enter a tyre size.")
+            return
+
+        rows = app.query("""
+            SELECT size, brand, price FROM tyres
+            WHERE UPPER(size) LIKE ?
+            ORDER BY size, brand
+        """, ('%' + term + '%',))
+
+        for size, brand, price in rows:
+            self.results.add_widget(Label(
+                text=f"{size}   |   {brand}   |   Rs. {price:,.0f}",
+                color=NAVY,
+                font_size=sp(16),
+                size_hint_y=None,
+                height=dp(45)
+            ))
+
+        if not rows:
+            app.message("Not Found", "No matching tyre found.")
+
+
+class AllScreen(Screen):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        layout = BoxLayout(
+            orientation="vertical",
+            padding=dp(15),
+            spacing=dp(8)
+        )
+
+        layout.add_widget(heading("ALL TYRE PRICES"))
+
+        self.rows_box = BoxLayout(
+            orientation="vertical",
+            spacing=dp(8),
+            size_hint_y=None
+        )
+        self.rows_box.bind(
+            minimum_height=self.rows_box.setter("height")
+        )
+
+        scroll = ScrollView()
+        scroll.add_widget(self.rows_box)
+        layout.add_widget(scroll)
+
+        layout.add_widget(make_button(
+            "BACK HOME",
+            lambda x: setattr(
+                App.get_running_app().sm, "current", "home"
+            )
+        ))
+
+        self.add_widget(layout)
+
+    def on_pre_enter(self, *args):
+        self.refresh()
+
+    def refresh(self):
+        app = App.get_running_app()
+        self.rows_box.clear_widgets()
+
+        rows = app.query(
+            "SELECT id, size, brand, price FROM tyres ORDER BY size, brand"
+        )
+
+        if not rows:
+            self.rows_box.add_widget(Label(
+                text="No tyre records saved yet.",
+                color=NAVY,
+                size_hint_y=None,
+                height=dp(60)
+            ))
+
+        for record in rows:
+            rid, size, brand, price = record
+
+            row = BoxLayout(
+                size_hint_y=None,
+                height=dp(95),
+                spacing=dp(5)
+            )
+
+            info = Label(
+                text=f"{size}\n{brand} | Rs. {price:,.0f}",
+                color=NAVY,
+                font_size=sp(14)
+            )
+            row.add_widget(info)
+
+            row.add_widget(make_button(
+                "EDIT",
+                lambda x, r=record: self.edit_record(r),
+                BLUE, WHITE
+            ))
+
+            row.add_widget(make_button(
+                "DELETE",
+                lambda x, i=rid: self.delete_record(i),
+                RED, WHITE
+            ))
+
+            self.rows_box.add_widget(row)
+
+    def edit_record(self, record):
+        app = App.get_running_app()
+        screen = app.sm.get_screen("add")
+        screen.prepare(record)
+        app.sm.current = "add"
+
+    def delete_record(self, rid):
+        app = App.get_running_app()
+
+        content = BoxLayout(
+            orientation="vertical",
+            spacing=dp(12),
+            padding=dp(12)
+        )
+
+        content.add_widget(Label(
+            text="Delete this tyre record?",
+            color=NAVY
+        ))
+
+        buttons = BoxLayout(spacing=dp(10))
+
+        popup = Popup(
+            title="Confirm Delete",
+            content=content,
+            size_hint=(0.85, 0.3)
+        )
+
+        buttons.add_widget(make_button(
+            "YES",
+            lambda x: self.confirm_delete(rid, popup),
+            RED, WHITE
+        ))
+
+        buttons.add_widget(make_button(
+            "NO", lambda x: popup.dismiss()
+        ))
+
+        content.add_widget(buttons)
+        popup.open()
+
+    def confirm_delete(self, rid, popup):
+        app = App.get_running_app()
+        app.query("DELETE FROM tyres WHERE id=?", (rid,))
+        popup.dismiss()
+        self.refresh()
+
+
+class SettingsScreen(Screen):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        layout = BoxLayout(
+            orientation="vertical",
+            padding=dp(20),
+            spacing=dp(12)
+        )
+
+        layout.add_widget(heading("SETTINGS"))
+
+        self.old = make_input("Old Password", True)
+        self.new = make_input("New Password", True)
+        self.confirm = make_input("Confirm New Password", True)
+
+        layout.add_widget(self.old)
+        layout.add_widget(self.new)
+        layout.add_widget(self.confirm)
+
+        layout.add_widget(make_button(
+            "CHANGE PASSWORD",
+            self.change,
+            BLUE, WHITE
+        ))
+
+        layout.add_widget(make_button(
+            "BACK HOME",
+            lambda x: setattr(
+                App.get_running_app().sm, "current", "home"
+            )
+        ))
+
+        self.add_widget(layout)
+
+    def change(self, instance):
+        app = App.get_running_app()
+
+        if not self.new.text:
+            app.message("Error", "New password is empty.")
+            return
+
+        if len(self.new.text) < 6:
+            app.message("Error", "Use at least 6 characters.")
+            return
+
+        if self.new.text != self.confirm.text:
+            app.message("Error", "Passwords do not match.")
+            return
+
+        if app.change_password(
+            self.old.text, self.new.text
+        ):
+            self.old.text = ""
+            self.new.text = ""
+            self.confirm.text = ""
+            app.message("Success", "Password changed!")
+        else:
+            app.message("Error", "Old password is incorrect.")
+
+
+if __name__ == "__main__":
+    TyreApp().run()
